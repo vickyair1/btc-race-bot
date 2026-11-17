@@ -1,8 +1,8 @@
 // Dip-buying BTC bot for make.fun btc-race-24h-20261117-0603.
 //
-// Strategy v3 (backtested on the dev window, +$33.47 net in the local
-// backtester, both halves positive: H1 +$19.95, H2 +$2.00; 61 fills,
-// max drawdown -79 bps; at 2x fees still +$30.91):
+// Strategy v4 (backtested on the dev window, +$35.60 net in the local
+// backtester, both halves positive: H1 +$21.93, H2 +$2.00; 61 fills,
+// max drawdown -73 bps; at 2x fees still +$33.12):
 //   - Start in cash. Track the running peak close.
 //   - Buy dips below the peak in BACK-LOADED tranches: -42 bps -> 2%,
 //     -84 -> 10%, -126 -> 35%, -168 -> 100% of equity (ratchet: levels only
@@ -10,11 +10,16 @@
 //     depth (mean reversion dominates at 30-120 min horizons), so the deep
 //     tranches carry the size; the shallow 2% tranche keeps the bot active
 //     on mild days without risking much.
-//   - Take profit: while the position is up >= 145 bps on its average cost,
+//   - Take profit: while the position is up >= 165 bps on its average cost,
 //     SELL EVERYTHING (target 0; the TWAP exit takes ~10 bars for a full
 //     position). The dev window mean-reverts, so banking the whole gain beats
-//     scaling out: selling all at the TP beat halving by +$1.12 in the grid.
-//     Dips rebuy afterwards (the ratchet re-arms from the dip levels).
+//     scaling out.
+//   - NEW in v4: after a take-profit sell-all, the running peak RESETS to the
+//     sell price. The next dip trigger is then measured from the post-TP price
+//     instead of the old all-time peak, so the bot re-enters sooner and catches
+//     more cycles. This one change (plus TP 145 -> 165, which the reset makes
+//     room for) added +$2.13 over v3 in the local backtester. TP 160-175 all
+//     score >= +$34.89, so 165 sits mid-plateau, not on a spike.
 //   - Crash exit: a 60-bar return <= -300 bps sells everything at once; the bot
 //     stays out until a 15-bar return >= +30 bps after a 15-bar cooldown, with
 //     the peak reset to the crash price.
@@ -23,28 +28,24 @@
 //     order (each bar's pool starts again from its own open depth). Crash exits
 //     ignore the TWAP cap: during a crash the falling price costs more than impact.
 //
-// v3 vs v2 (back-loaded 5/10/35/50 at -42/-84/-126/-168, TP 140 bps halve
-// every 3 bars, local +$30.17 / official +$31.01): the v3 grid tested ~70 more
-// variants across 6 phases. The winners were all in the TP dimension: selling
-// ALL at the TP (keep 0.0) beat halving at every TP level, TP 145 beat 140 at
-// every size split, and pushing the deepest tranche to 65% (2/8/25/65) beat
-// 5/10/35/50. Neighbourhood is smooth (top-5 configs within $0.22; dip -41
-// scores the same as -42, so -42 is a plateau, not a spike). Rejected along
-// the way: TP-once-per-cycle (holds losers through fades, -$11), asymmetric
-// TWAP, starting invested (init > 0, monotone worse), 5-level dip schedules,
-// entry delays, TP ladders, mean-reversion exits, z-score entries, rolling
-// peaks, momentum entries (all worse, most with negative H2).
+// v4 vs v3 (sell-all TP at +145 bps, same tranches, local +$33.47 / official
+// +$33.60): the v4 grid tested 4 genuinely new dimensions the v2/v3 grids and
+// a 500-variant check never tried. Peak-reset + TP 165 won (+$35.60 local);
+// trailing-stop exits (all worse: +$12-30, or no-ops because the fixed TP
+// fired first), breakout-buy add-ons (no-op on the dev window), TP rebuys
+// (all worse), and shallow 5th dip levels (worse) were rejected. Neighbourhood
+// smooth (sizes 3/7/25/65 +$35.53, 5/5/25/65 +$35.38, dips -40 +$34.85).
 //
 // All arithmetic is BigInt (prices are ints, returns in basis points), no clock,
 // no randomness, no network: the same bars give the same orders, run after run.
 // One order per batch at most. max_slippage_bps 100 on every order.
 //
-// Verified with the kit's own grader on the dev window (v3):
-//   grade-local --driver process: net PnL +33.603 USDC, 59 trades, win rate
-//   1.000, max drawdown 0.79%, 0 rejected orders, L1 regrade reproduced byte
-//   for byte (deterministic); at 2x fees still +$31.137. Buy-and-hold on the
+// Verified with the kit's own grader on the dev window (v4):
+//   grade-local --driver process: net PnL +35.590 USDC, 59 trades, win rate
+//   1.000, max drawdown 0.73%, 0 rejected orders, L1 regrade reproduced byte
+//   for byte (deterministic); at 2x fees still +$33.113. Buy-and-hold on the
 //   same window nets +$1.07; the house EMA-cross baseline loses $106.21.
-//   v2 graded +$31.014 on the same window, so v3 gains +$2.59 (+8.4%).
+//   v3 graded +$33.603 on the same window, so v4 gains +$1.987 (+5.9%).
 
 import {
   BPS,
@@ -68,7 +69,7 @@ const DIP_LEVELS: Array<[bigint, bigint]> = [
   [126n, 3500n],
   [168n, 10000n],
 ];
-const TAKE_PROFIT_BPS = 145n; // sell everything while the position is up this much
+const TAKE_PROFIT_BPS = 165n; // sell everything while the position is up this much
 const TAKE_PROFIT_COOLDOWN = 3; // bars between take-profit exits
 const CRASH_BPS = 300n; // 60-bar return at or below this (-300 bps) exits all
 const CRASH_WINDOW = 60;
@@ -141,7 +142,7 @@ function onBatch(state: BarsState, batch: Batch): OrderInput[] {
   }
   ratchet = target;
 
-  // --- take profit: sell everything while up >= 145 bps on cost ---
+  // --- take profit: sell everything while up >= 165 bps on cost ---
   // (the TWAP exit below sells at most 10% of equity per bar, so a full
   // position takes ~10 bars to empty; dips rebuy afterwards via the ratchet)
   if (qty > 0n && cost > 0n) {
@@ -150,6 +151,9 @@ function onBatch(state: BarsState, batch: Batch): OrderInput[] {
       tpBar = i;
       ratchet = 0n;
       target = ratchet;
+      // v4: reset the peak to the sell price, so the next dip trigger is
+      // measured from here instead of the old all-time peak (re-enter sooner).
+      peak = close;
     }
   }
 
