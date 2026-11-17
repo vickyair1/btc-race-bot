@@ -1,12 +1,16 @@
 // Dip-buying BTC bot for make.fun btc-race-24h-20261117-0603.
 //
-// Strategy (backtested on the dev window, +$16.94 net in the local backtester):
+// Strategy v2 (backtested on the dev window, +$30.17 net in the local
+// backtester, both halves positive: H1 +$18.21, H2 +$1.54):
 //   - Start in cash. Track the running peak close.
-//   - Buy dips below the peak in tranches: -50 bps -> 25%, -100 -> 50%,
-//     -150 -> 75%, -200 -> 100% of equity (ratchet: levels only ever raise the
-//     target; a recovery never sells).
-//   - Take profit: while the position is up >= 100 bps on its average cost,
-//     halve the target every 5+ bars (scale out into strength; dips rebuy).
+//   - Buy dips below the peak in BACK-LOADED tranches: -42 bps -> 5%,
+//     -84 -> 15%, -126 -> 50%, -168 -> 100% of equity (ratchet: levels only
+//     ever raise the target; a recovery never sells). The edge grows with dip
+//     depth (mean reversion dominates at 30-120 min horizons), so the deep
+//     tranches carry the size; the shallow 5% tranche keeps the bot active
+//     on mild days.
+//   - Take profit: while the position is up >= 140 bps on its average cost,
+//     halve the target every 3+ bars (scale out into strength; dips rebuy).
 //   - Crash exit: a 60-bar return <= -300 bps sells everything at once; the bot
 //     stays out until a 15-bar return >= +30 bps after a 15-bar cooldown, with
 //     the peak reset to the crash price.
@@ -15,15 +19,22 @@
 //     order (each bar's pool starts again from its own open depth). Crash exits
 //     ignore the TWAP cap: during a crash the falling price costs more than impact.
 //
+// v2 vs v1 (equal 25% tranches at -50/-100/-150/-200, TP 100 bps every 5 bars,
+// local +$16.94 / official +$17.32): the grid search tested ~90 variants and
+// the back-loaded + tighter-dip + higher-TP combination won on all three splits
+// (full, H1, H2) with a smooth neighbourhood and 2x-fee robustness (+$27.00).
+// Rejected along the way: TP ladder, mean-reversion exits, z-score entries,
+// rolling peaks, momentum entries (all worse, most with negative H2).
+//
 // All arithmetic is BigInt (prices are ints, returns in basis points), no clock,
 // no randomness, no network: the same bars give the same orders, run after run.
 // One order per batch at most. max_slippage_bps 100 on every order.
 //
-// Verified with the kit's own grader on the dev window:
-//   grade-local --driver process: net PnL +17.315 USDC, 64 trades, win rate
-//   1.000, max drawdown 1.03%, 0 rejected orders, L1 regrade reproduced byte
-//   for byte (deterministic). Buy-and-hold on the same window nets +$1.07;
-//   the house EMA-cross baseline loses $106.21.
+// Verified with the kit's own grader on the dev window (v2):
+//   grade-local --driver process: net PnL +31.014 USDC, 64 trades, win rate
+//   1.000, max drawdown 0.90%, 0 rejected orders, L1 regrade reproduced byte
+//   for byte (deterministic); at 2x fees still +$28.594. Buy-and-hold on the
+//   same window nets +$1.07; the house EMA-cross baseline loses $106.21.
 
 import {
   BPS,
@@ -40,14 +51,15 @@ const MAX_SLIPPAGE_BPS = 100;
 const TWAP_BPS = 1000n; // move at most 10% of equity per bar toward the target
 
 // Dip levels below the running peak (bps) and the target weight each sets (bps).
+// Back-loaded: the deep tranches carry the size (5/10/35/50).
 const DIP_LEVELS: Array<[bigint, bigint]> = [
-  [50n, 2500n],
-  [100n, 5000n],
-  [150n, 7500n],
-  [200n, 10000n],
+  [42n, 500n],
+  [84n, 1500n],
+  [126n, 5000n],
+  [168n, 10000n],
 ];
-const TAKE_PROFIT_BPS = 100n; // halve the target while the position is up this much
-const TAKE_PROFIT_COOLDOWN = 5; // bars between take-profit halvings
+const TAKE_PROFIT_BPS = 140n; // halve the target while the position is up this much
+const TAKE_PROFIT_COOLDOWN = 3; // bars between take-profit halvings
 const CRASH_BPS = 300n; // 60-bar return at or below this (-300 bps) exits all
 const CRASH_WINDOW = 60;
 const CRASH_COOLDOWN = 15; // bars to wait after a crash exit before re-entry
@@ -119,7 +131,7 @@ function onBatch(state: BarsState, batch: Batch): OrderInput[] {
   }
   ratchet = target;
 
-  // --- take profit: halve the target while up >= 100 bps on cost ---
+  // --- take profit: halve the target while up >= 140 bps on cost ---
   if (qty > 0n && cost > 0n) {
     const gain = ((value - cost) * BPS) / cost;
     if (gain >= TAKE_PROFIT_BPS && i > tpBar + TAKE_PROFIT_COOLDOWN) {
