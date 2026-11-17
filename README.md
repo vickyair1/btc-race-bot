@@ -21,10 +21,15 @@ open depth, fills at the next bar's open):
   target; a recovery never sells. The edge grows with dip depth (mean
   reversion dominates at 30-120 min horizons), so the deep tranches carry the
   size; the shallow 2% tranche keeps the bot active on mild days.
-- **Take profit:** while the position is up >= 145 bps on its average cost,
+- **Take profit:** while the position is up >= 165 bps on its average cost,
   SELL EVERYTHING (target 0; the TWAP exit takes ~10 bars for a full
   position). The dev window mean-reverts, so banking the whole gain beats
   scaling out. Dips rebuy afterwards.
+- **Peak reset after a take-profit:** after selling everything at the TP, the
+  running peak resets to the sell price, so the next dip trigger is measured
+  from the post-TP price instead of the old all-time peak — the bot re-enters
+  sooner and catches more cycles. TP 160-175 all score >= +$34.89, so 165
+  sits mid-plateau, not on a spike.
 - **Crash exit:** a 60-bar return <= -300 bps sells everything at once. The
   bot stays out until a 15-bar return >= +30 bps after a 15-bar cooldown, with
   the peak reset to the crash price.
@@ -45,25 +50,22 @@ no randomness, no network: the same bars give the same orders, run after run.
 ## Local result
 
 **Official grade on the dev window (kit grader, process driver):
-net PnL +33.603 USDC** — 59 trades, win rate 1.000, max drawdown 0.79%,
+net PnL +35.590 USDC** — 59 trades, win rate 1.000, max drawdown 0.73%,
 0 rejected orders, L1 regrade reproduced byte for byte (deterministic).
-Fees $2.45; at 2x fees net PnL is still +$31.14.
+Fees $2.46; at 2x fees net PnL is still +$33.11.
 
 Backtester on the same window (independent replication of the fill model):
-+$33.47, positive in both halves (+$19.95 / +$2.00). Buy-and-hold on the same
++$35.60, positive in both halves (+$21.93 / +$2.00). Buy-and-hold on the same
 window nets +$1.07; the house EMA-cross baseline loses $106.21 (68 trades —
 round-trip costs of ~35 bps at full size punish churn).
 
 v1 of this bot (equal 25% tranches at -50/-100/-150/-200, TP 100 bps every
 5 bars) graded +$17.32 officially. v2 (back-loaded 5/10/35/50, TP 140 bps
-halve every 3 bars) graded +$31.01. v3 comes from a further ~70-variant grid
-search: selling ALL at the TP beat halving at every TP level, TP 145 beat 140
-at every size split, and pushing the deepest tranche to 65% (2/8/25/65) won
-on all three splits with a smooth neighbourhood (top-5 configs within $0.22).
-Rejected along the way: TP-once-per-cycle, asymmetric TWAP, starting invested,
-5-level dip schedules, entry delays, TP ladders, mean-reversion exits,
-z-score entries, rolling peaks, momentum entries (all worse, most with a
-negative second half).
+halve every 3 bars) graded +$31.01. v3 (sell-all TP at 145 bps, tranches
+2/8/25/65) graded +$33.60. v4 comes from a further grid over 4 dimensions
+the earlier grids never tried: resetting the running peak after a take-profit
+sell-all (plus TP 145 -> 165) won at +$35.59. Trailing-stop exits, breakout-buy
+add-ons, TP rebuys, and shallow 5th dip levels were all tested and rejected.
 
 Grade it the way the server does:
 
