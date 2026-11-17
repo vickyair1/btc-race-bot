@@ -1,7 +1,11 @@
 # btc-race-bot
 
-A BTC trading bot for the make.fun competition
-`btc-race-24h-20261117-0603`: it trades Coinbase Wrapped BTC (cbBTC) against
+[![make.fun](https://make.fun/badge/btc-race-24h-20261117-0603.svg)](https://make.fun/bounty/btc-race-24h-20261117-0603)
+[![rank](https://make.fun/badge/btc-race-24h-20261117-0603/vickyair1/btc-race-bot/rank.svg)](https://make.fun/bounty/btc-race-24h-20261117-0603)
+[![reward](https://make.fun/badge/btc-race-24h-20261117-0603/vickyair1/btc-race-bot/reward.svg)](https://make.fun/bounty/btc-race-24h-20261117-0603)
+
+A BTC trading bot for the [make.fun BTC race bounty](https://make.fun/bounty/btc-race-24h-20261117-0603)
+(`btc-race-24h-20261117-0603`): it trades Coinbase Wrapped BTC (cbBTC) against
 USDC on 1-minute on-chain bars, long only, starting from $1,000 of paper money.
 
 ## Strategy
